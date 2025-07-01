@@ -1,66 +1,79 @@
 # backend/app.py
 
 import os
-from flask import Flask, request, Response, jsonify
+import uuid
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
 import io
-import json # Import the json library
+import json
+import redis
+from rq import Queue
 
-# Import your scraper functions and shared state
-from georgia_scraper import run_georgia_verification
-from california_scraper import run_california_verification
-import shared_state
+# Import the task function
+from tasks import run_scraper_task
 
+# Setup Flask App and Redis/RQ connection
 app = Flask(__name__)
 CORS(app)
+redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+redis_conn = redis.from_url(redis_url)
+q = Queue(connection=redis_conn)
 
-@app.route('/stop', methods=['POST'])
-def stop_verification():
-    shared_state.STOP_REQUESTED = True
-    return jsonify({"message": "Stop signal received"}), 200
-
-@app.route('/run-verification', methods=['POST'])
-def run_verification_endpoint():
-    shared_state.STOP_REQUESTED = False
-
+@app.route('/start-scraping', methods=['POST'])
+def start_scraping():
+    """
+    This endpoint takes the user's request, creates a job,
+    and adds it to the Redis queue. It returns a job ID instantly.
+    """
     if 'file' not in request.files: return jsonify({"error": "No file part"}), 400
     file = request.files['file']
     if file.filename == '': return jsonify({"error": "No selected file"}), 400
 
     api_key = request.form.get('apiKey')
     state = request.form.get('state')
-    # --- NEW: Get the column mapping from the request ---
     mapping_json = request.form.get('mapping')
 
     if not all([api_key, state, mapping_json]):
         return jsonify({"error": "API key, state, or mapping is missing"}), 400
 
     try:
-        # --- NEW: Load the mapping from the JSON string ---
         column_mapping = json.loads(mapping_json)
-
-        csv_data = io.StringIO(file.stream.read().decode("UTF8"))
-        df = pd.read_csv(csv_data)
+        csv_data = pd.read_csv(file.stream.read().decode("UTF8"))
         
-        # --- THE CORE FIX: Rename columns based on user's mapping ---
-        # Create a reverse map for renaming: {'Fname': 'first name', 'Lname': 'last name'}
+        # Rename columns based on user's mapping before passing to the task
         rename_map = {v: k for k, v in column_mapping.items()}
-        df.rename(columns=rename_map, inplace=True)
-        # --- END FIX ---
+        csv_data.rename(columns=rename_map, inplace=True)
 
-        # Now the rest of the script works because the columns are correctly named!
-        if state == 'georgia':
-            scraper_generator = run_georgia_verification(df, api_key)
-        elif state == 'california':
-            scraper_generator = run_california_verification(df, api_key)
-        else:
-            return jsonify({"error": "Invalid state selected"}), 400
-
-        return Response(scraper_generator, mimetype='text/plain')
+        # Enqueue the job. The worker will pick this up.
+        # We pass the dataframe as a JSON string to make it queue-safe.
+        job = q.enqueue(
+            run_scraper_task,
+            job_id=str(uuid.uuid4()), # Create a unique ID for this job
+            args=(state, csv_data.to_json(orient='records'), api_key, column_mapping),
+            job_timeout='2h' # Allow the job to run for up to 2 hours
+        )
+        
+        return jsonify({"job_id": job.id}), 202 # 202 Accepted
 
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+@app.route('/status/<job_id>', methods=['GET'])
+def get_status(job_id):
+    """
+    This endpoint is polled by the frontend to get live updates
+    on the job's status, logs, and results.
+    """
+    job = q.fetch_job(job_id)
+    if job:
+        logs = [log.decode('utf-8') for log in redis_conn.lrange(f"logs:{job_id}", 0, -1)]
+        response_object = {
+            "id": job.id,
+            "status": job.get_status(),
+            "meta": job.meta,
+            "logs": logs
+        }
+        return jsonify(response_object), 200
+    else:
+        return jsonify({"error": "Job not found"}), 404

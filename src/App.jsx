@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadCloud, BarChart2, Download, Play, XCircle, CheckCircle, AlertTriangle, Cpu, Calendar, User, Link as LinkIcon, StopCircle, Settings } from 'lucide-react';
+import { UploadCloud, BarChart2, Download, Play, XCircle, CheckCircle, AlertTriangle, Cpu, Calendar, User, Link as LinkIcon, Loader } from 'lucide-react';
 import Papa from 'papaparse';
 
 // Helper Components
@@ -24,7 +24,6 @@ const LogDisplay = ({ logs }) => {
 // Column Mapping Modal Component
 const ColumnMappingModal = ({ isOpen, onClose, headers, onConfirm }) => {
     const [mapping, setMapping] = useState({ 'first name': '', 'last name': '', 'admit date': '' });
-
     useEffect(() => {
         const autoMap = (header) => {
             const lowerHeader = header.toLowerCase();
@@ -36,56 +35,23 @@ const ColumnMappingModal = ({ isOpen, onClose, headers, onConfirm }) => {
         const newMapping = { 'first name': '', 'last name': '', 'admit date': '' };
         headers.forEach(header => {
             const targetField = autoMap(header);
-            if (targetField && !newMapping[targetField]) {
-                newMapping[targetField] = header;
-            }
+            if (targetField && !newMapping[targetField]) { newMapping[targetField] = header; }
         });
         setMapping(newMapping);
     }, [headers]);
-
     if (!isOpen) return null;
-
     const handleConfirm = () => {
-        if (!mapping['first name'] || !mapping['last name'] || !mapping['admit date']) {
-            alert('Please map all required fields.');
-            return;
-        }
+        if (!mapping['first name'] || !mapping['last name'] || !mapping['admit date']) { alert('Please map all required fields.'); return; }
         onConfirm(mapping);
     };
-
-    const renderSelect = (field) => (
-        <div className="modal-field" key={field}>
-            <label htmlFor={field}>Map to "{field}"</label>
-            <select id={field} value={mapping[field]} onChange={(e) => setMapping(prev => ({ ...prev, [field]: e.target.value }))}>
-                <option value="" disabled>Select a column...</option>
-                {headers.map(header => (<option key={header} value={header}>{header}</option>))}
-            </select>
-        </div>
-    );
-
-    return (
-        <div className="modal-overlay">
-            <div className="modal-content">
-                <h2 className="modal-title">Map Your CSV Columns</h2>
-                <p className="modal-subtitle">Select which columns from your file correspond to the required data fields.</p>
-                <div className="modal-body">{Object.keys(mapping).map(renderSelect)}</div>
-                <div className="modal-footer">
-                    <button onClick={onClose} className="modal-button-secondary">Cancel</button>
-                    <button onClick={handleConfirm} className="modal-button-primary">Confirm & Start</button>
-                </div>
-            </div>
-        </div>
-    );
+    const renderSelect = (field) => ( <div className="modal-field" key={field}><label htmlFor={field}>Map to "{field}"</label><select id={field} value={mapping[field]} onChange={(e) => setMapping(prev => ({ ...prev, [field]: e.target.value }))}><option value="" disabled>Select a column...</option>{headers.map(header => (<option key={header} value={header}>{header}</option>))}</select></div> );
+    return ( <div className="modal-overlay"><div className="modal-content"><h2 className="modal-title">Map Your CSV Columns</h2><p className="modal-subtitle">Select which columns from your file correspond to the required data fields.</p><div className="modal-body">{Object.keys(mapping).map(renderSelect)}</div><div className="modal-footer"><button onClick={onClose} className="modal-button-secondary">Cancel</button><button onClick={handleConfirm} className="modal-button-primary">Confirm & Start</button></div></div></div> );
 };
 
 // Main App Component
 export default function App() {
-  // --- THIS IS THE MAIN CHANGE ---
-  // It defines the backend URL. It will use the Render URL when deployed,
-  // and the localhost URL when you run it on your computer.
   const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5001';
-  // -----------------------------
-
+  
   const [file, setFile] = useState(null);
   const [apiKey, setApiKey] = useState('');
   const [selectedState, setSelectedState] = useState('georgia');
@@ -96,7 +62,16 @@ export default function App() {
   const [error, setError] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [csvHeaders, setCsvHeaders] = useState([]);
-  const abortControllerRef = useRef(null);
+  const [jobId, setJobId] = useState(null);
+  const pollingIntervalRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+        if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+        }
+    };
+  }, []);
 
   const handleFileChange = (e) => {
     const uploadedFile = e.target.files[0];
@@ -109,9 +84,7 @@ export default function App() {
                 if (result.data[0]) {
                     setCsvHeaders(Object.keys(result.data[0]));
                     setIsModalOpen(true);
-                } else {
-                    setError("Could not read headers from CSV. The file might be empty or invalid.");
-                }
+                } else { setError("Could not read headers from CSV."); }
             }
         });
     } else { setError("Please upload a valid .csv file."); setFile(null); }
@@ -131,20 +104,51 @@ export default function App() {
                 if (result.data[0]) {
                     setCsvHeaders(Object.keys(result.data[0]));
                     setIsModalOpen(true);
-                } else {
-                    setError("Could not read headers from CSV. The file might be empty or invalid.");
-                }
+                } else { setError("Could not read headers from CSV."); }
             }
         });
     } else { setError("Please upload a valid .csv file."); setFile(null); }
   };
 
-  const startProcess = async (columnMapping) => {
+  const pollJobStatus = (id) => {
+    pollingIntervalRef.current = setInterval(async () => {
+        try {
+            const res = await fetch(`${API_BASE_URL}/status/${id}`);
+            if (!res.ok) {
+                clearInterval(pollingIntervalRef.current);
+                setError("Could not retrieve job status.");
+                setIsRunning(false);
+                return;
+            }
+            const data = await res.json();
+            setLogs(data.logs || []);
+            
+            const jobStatus = data.status;
+            if (jobStatus === 'finished' || jobStatus === 'failed') {
+                clearInterval(pollingIntervalRef.current);
+                setIsRunning(false);
+                setIsFinished(true);
+                if (data.meta && data.meta.results) {
+                    setResults(JSON.parse(data.meta.results));
+                }
+                if (jobStatus === 'failed') {
+                    setError(data.meta.error || "Job failed without a specific error message.");
+                }
+            }
+        } catch (e) {
+            clearInterval(pollingIntervalRef.current);
+            setError("Error checking job status.");
+            setIsRunning(false);
+        }
+    }, 3000);
+  };
+
+  const startJob = async (columnMapping) => {
     if (!file || !apiKey || !columnMapping) { setError("Missing file, API key, or column mapping."); return; }
     
     setIsModalOpen(false);
-    abortControllerRef.current = new AbortController();
-    setError(''); setIsRunning(true); setIsFinished(false); setLogs([]); setResults([]);
+    setError(''); setIsRunning(true); setIsFinished(false); setLogs(["Submitting job to the queue..."]); setResults([]);
+    if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
 
     const formData = new FormData();
     formData.append('file', file);
@@ -153,38 +157,21 @@ export default function App() {
     formData.append('mapping', JSON.stringify(columnMapping));
 
     try {
-      // --- Use the API_BASE_URL variable here ---
-      const response = await fetch(`${API_BASE_URL}/run-verification`, { method: 'POST', body: formData, signal: abortControllerRef.current.signal });
-      
+      const response = await fetch(`${API_BASE_URL}/start-scraping`, { method: 'POST', body: formData });
       if (!response.ok) { const errData = await response.json(); throw new Error(errData.error || 'Backend error'); }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { setIsFinished(true); break; }
-        let chunk = decoder.decode(value, { stream: true });
-        if (chunk.includes("__RESULTS__")) {
-            const parts = chunk.split("__RESULTS__");
-            if(parts[0]) { setLogs(prev => [...prev, ...parts[0].split('\n').filter(Boolean)]); }
-            if(parts[1]) { try { setResults(JSON.parse(parts[1])); } catch (e) { setError("Failed to parse final results."); } }
-        } else { setLogs(prev => [...prev, ...chunk.split('\n').filter(Boolean)]); }
-      }
-    } catch (e) {
-      if (e.name === 'AbortError') { setLogs(prev => [...prev, "--- [Module Stop] Verification stopped by user. ---"]); } 
-      else { setError(`Failed to connect to backend: ${e.message}`); }
-    } finally { setIsRunning(false); }
-  };
+      
+      const { job_id } = await response.json();
+      setJobId(job_id);
+      setLogs(prev => [...prev, `Job successfully submitted with ID: ${job_id}`, "Waiting for worker to start..."]);
+      pollJobStatus(job_id);
 
-  const stopProcess = async () => {
-    setIsRunning(false);
-    if (abortControllerRef.current) { abortControllerRef.current.abort(); }
-    try { 
-      // --- Use the API_BASE_URL variable here too ---
-      await fetch(`${API_BASE_URL}/stop`, { method: 'POST' }); 
-    } 
-    catch (e) { console.error("Failed to send stop signal to backend:", e); }
+    } catch (e) {
+      setError(`Failed to start job: ${e.message}`);
+      setIsRunning(false);
+    }
   };
   
+  // --- THESE FUNCTIONS ARE NOW CORRECTLY INCLUDED ---
   const downloadCSV = () => {
     if(results.length === 0) return;
     const headers = Object.keys(results[0]);
@@ -208,25 +195,26 @@ export default function App() {
     return { total, matched, notFound, mismatch };
   };
   const stats = getStats();
+  // --- END OF INCLUDED FUNCTIONS ---
 
   return (
     <>
-      <ColumnMappingModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} headers={csvHeaders} onConfirm={startProcess} />
+      <ColumnMappingModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} headers={csvHeaders} onConfirm={startJob} />
       <div className="app-container">
         <div className="main-content">
           <header>
             <h1 className="main-title">License Verification Dashboard</h1>
-            <p className="subtitle">Automated verification for Georgia & California Bar records.</p>
+            <p className="subtitle">Automated verification with Background Worker</p>
           </header>
           <main className="grid-container">
             <div className="controls-column">
               <Card className="p-6">
                 <h2 className="section-title"><span className="step-number">1</span>Configuration</h2>
-                <div className="config-section"><label className="label">Select State</label><div className="state-selection">{['georgia', 'california'].map(state => (<button key={state} onClick={() => setSelectedState(state)} className={`state-button ${selectedState === state ? 'active' : ''}`}>{state}</button>))}</div></div>
-                <div className="config-section"><label htmlFor="api-key" className="label">Gemini API Key</label><input type="password" id="api-key" value={apiKey} onChange={e => setApiKey(e.target.value)} className="input-field" placeholder="Enter your API key" /></div>
-                <div className="config-section"><label className="label">Upload CSV File</label><div onDrop={handleDrop} onDragOver={handleDragOver} className="dropzone" onClick={() => document.getElementById('file-upload').click()}><input type="file" id="file-upload" className="hidden" onChange={handleFileChange} accept=".csv" /><UploadCloud className="dropzone-icon" /><p className="dropzone-text">{file ? 'File ready:' : 'Drag & drop or click to upload'}</p>{file && <p className="filename">{file.name}</p>}</div></div>
+                <div className="config-section"><label className="label">Select State</label><div className="state-selection">{['georgia', 'california'].map(state => (<button key={state} onClick={() => setSelectedState(state)} disabled={isRunning} className={`state-button ${selectedState === state ? 'active' : ''}`}>{state}</button>))}</div></div>
+                <div className="config-section"><label htmlFor="api-key" className="label">Gemini API Key</label><input type="password" id="api-key" value={apiKey} onChange={e => setApiKey(e.target.value)} disabled={isRunning} className="input-field" placeholder="Enter your API key" /></div>
+                <div className="config-section"><label className="label">Upload CSV File</label><div onDrop={isRunning ? null : handleDrop} onDragOver={isRunning ? null : handleDragOver} className={`dropzone ${isRunning ? 'disabled' : ''}`} onClick={isRunning ? null : () => document.getElementById('file-upload').click()}><input type="file" id="file-upload" className="hidden" onChange={handleFileChange} accept=".csv" disabled={isRunning} /><UploadCloud className="dropzone-icon" /><p className="dropzone-text">{file ? 'File ready:' : 'Drag & drop or click to upload'}</p>{file && <p className="filename">{file.name}</p>}</div></div>
                 {error && <div className="error-message"><AlertTriangle size={16} /> {error}</div>}
-                <div className="button-group">{isRunning && (<button onClick={stopProcess} className="stop-button"><StopCircle size={20} /> Stop Process</button>)}</div>
+                <div className="button-group">{isRunning && (<div className="running-indicator"><Loader className="spinner"/>Processing...</div>)}</div>
               </Card>
             </div>
             <div className="results-column">

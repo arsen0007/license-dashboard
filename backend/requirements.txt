@@ -5,3 +5,5 @@ selenium
 webdriver-manager
 google-generativeai
 gunicorn
+rq
+redis
