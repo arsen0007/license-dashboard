@@ -1,0 +1,16 @@
+# Node.js dependencies
+/node_modules
+
+# Python virtual environment
+/backend/venv
+/backend/__pycache__/
+
+# Vite build output
+/dist
+
+# Log files
+*.log
+
+# OS-generated files
+.DS_Store
+Thumbs.db
