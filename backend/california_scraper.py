@@ -25,8 +25,12 @@ def run_california_verification(california_df: pd.DataFrame, gemini_api_key: str
         options.add_experimental_option('excludeSwitches', ['enable-logging'])
         options.add_argument("--headless")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
+        # --- OPTIMIZATIONS FOR LOW-RESOURCE ENVIRONMENTS ---
+        options.add_argument("--no-sandbox") # A must-have for running in Docker
+        options.add_argument("--disable-dev-shm-usage") # Overcomes limited shared memory problems
+        options.add_argument("--disable-gpu") # Disables GPU hardware acceleration
+        options.add_argument("--disable-extensions")
+        options.add_argument("--single-process") # Runs Chrome in a single process
         driver = webdriver.Chrome(service=service, options=options)
         wait = WebDriverWait(driver, 15)
 

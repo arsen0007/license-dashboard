@@ -5,7 +5,6 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install system dependencies needed for Selenium and Chrome
-# Had to add wget and unzip to get chromedriver
 RUN apt-get update && apt-get install -y \
     wget \
     unzip \
@@ -27,5 +26,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the backend application code into the container
 COPY . .
 
-# Command to run the application using gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
+# --- OPTIMIZED GUNICORN COMMAND ---
+# --workers 1: Use only one process to conserve memory.
+# --timeout 120: Increase the timeout to 120 seconds to allow scrapers to run longer.
+# --bind 0.0.0.0:10000: Binds to the port Render expects.
+CMD ["gunicorn", "--workers", "1", "--timeout", "120", "--bind", "0.0.0.0:10000", "app:app"]
