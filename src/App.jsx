@@ -80,6 +80,12 @@ const ColumnMappingModal = ({ isOpen, onClose, headers, onConfirm }) => {
 
 // Main App Component
 export default function App() {
+  // --- THIS IS THE MAIN CHANGE ---
+  // It defines the backend URL. It will use the Render URL when deployed,
+  // and the localhost URL when you run it on your computer.
+  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5001';
+  // -----------------------------
+
   const [file, setFile] = useState(null);
   const [apiKey, setApiKey] = useState('');
   const [selectedState, setSelectedState] = useState('georgia');
@@ -147,7 +153,9 @@ export default function App() {
     formData.append('mapping', JSON.stringify(columnMapping));
 
     try {
-      const response = await fetch('http://127.0.0.1:5001/run-verification', { method: 'POST', body: formData, signal: abortControllerRef.current.signal });
+      // --- Use the API_BASE_URL variable here ---
+      const response = await fetch(`${API_BASE_URL}/run-verification`, { method: 'POST', body: formData, signal: abortControllerRef.current.signal });
+      
       if (!response.ok) { const errData = await response.json(); throw new Error(errData.error || 'Backend error'); }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -170,7 +178,10 @@ export default function App() {
   const stopProcess = async () => {
     setIsRunning(false);
     if (abortControllerRef.current) { abortControllerRef.current.abort(); }
-    try { await fetch('http://127.0.0.1:5001/stop', { method: 'POST' }); } 
+    try { 
+      // --- Use the API_BASE_URL variable here too ---
+      await fetch(`${API_BASE_URL}/stop`, { method: 'POST' }); 
+    } 
     catch (e) { console.error("Failed to send stop signal to backend:", e); }
   };
   
@@ -218,7 +229,6 @@ export default function App() {
                 <div className="button-group">{isRunning && (<button onClick={stopProcess} className="stop-button"><StopCircle size={20} /> Stop Process</button>)}</div>
               </Card>
             </div>
-            {/* --- THIS IS THE CODE THAT WAS MISSING --- */}
             <div className="results-column">
               <Card className="p-6">
                   <h2 className="section-title"><span className="step-number">2</span>Live Process Log</h2>
@@ -234,7 +244,6 @@ export default function App() {
                 </Card>
               )}
             </div>
-            {/* --- END OF MISSING CODE --- */}
           </main>
         </div>
       </div>
